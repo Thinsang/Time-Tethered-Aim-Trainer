@@ -3,6 +3,8 @@ import sys
 import random
 import time
 import math
+import json
+import os
 from collections import deque
 
 # Initialize pygame
@@ -20,6 +22,7 @@ CYAN = (0, 255, 255)
 YELLOW = (255, 255, 0)
 PURPLE = (128, 0, 128)
 ORANGE = (255, 165, 0)
+GREY = (180, 180, 180)
 
 # Game settings
 GAME_DURATION = 30  # seconds
@@ -44,6 +47,9 @@ DIFFICULTY_SETTINGS = {
         "max_targets": 8
     }
 }
+
+# Leaderboard file
+LEADERBOARD_FILE = "aim_trainer_leaderboard.json"
 
 class Button:
     def __init__(self, x, y, width, height, text, color, hover_color):
@@ -127,6 +133,55 @@ class Target:
             return False
         return (time.time() - self.hit_time) >= self.hit_animation_duration
 
+class Leaderboard:
+    def __init__(self):
+        self.scores = {"Easy": [], "Medium": [], "Hard": []}
+        self.load()
+        
+    def load(self):
+        try:
+            if os.path.exists(LEADERBOARD_FILE):
+                with open(LEADERBOARD_FILE, 'r') as f:
+                    self.scores = json.load(f)
+        except Exception as e:
+            print(f"Error loading leaderboard: {e}")
+            self.scores = {"Easy": [], "Medium": [], "Hard": []}
+            
+    def save(self):
+        try:
+            with open(LEADERBOARD_FILE, 'w') as f:
+                json.dump(self.scores, f)
+        except Exception as e:
+            print(f"Error saving leaderboard: {e}")
+            
+    def add_score(self, difficulty, score):
+        if difficulty not in self.scores:
+            self.scores[difficulty] = []
+            
+        self.scores[difficulty].append(score)
+        # Sort scores in descending order
+        self.scores[difficulty].sort(reverse=True)
+        # Keep only top 10 scores
+        self.scores[difficulty] = self.scores[difficulty][:10]
+        self.save()
+        
+    def get_top_scores(self, difficulty, count=5):
+        if difficulty not in self.scores:
+            return []
+        
+        return self.scores[difficulty][:count]
+        
+    def get_rank(self, difficulty, score):
+        if difficulty not in self.scores:
+            return 1
+            
+        # Count how many scores are higher than this one
+        rank = 1
+        for s in self.scores[difficulty]:
+            if s > score:
+                rank += 1
+        return rank
+
 class Game:
     def __init__(self):
         self.screen = pygame.display.set_mode((WIDTH, HEIGHT))
@@ -135,9 +190,13 @@ class Game:
         self.font = pygame.font.SysFont(None, 36)
         self.title_font = pygame.font.SysFont(None, 60)
         self.subtitle_font = pygame.font.SysFont(None, 36)
+        self.small_font = pygame.font.SysFont(None, 24)
+        
+        # Leaderboard
+        self.leaderboard = Leaderboard()
         
         # Game states
-        self.state = "home"  # "home", "game", "game_over"
+        self.state = "home"  # "home", "game", "game_over", "leaderboard"
         self.difficulty = "Medium"  # Default difficulty
         
         # Initialize buttons
@@ -150,35 +209,35 @@ class Game:
         # Play button (larger)
         play_button_width = 200
         play_button_height = 60
-        play_y = HEIGHT // 2
+        play_y = HEIGHT // 2 - 30
         self.play_button = Button(
             center_x - play_button_width // 2, 
             play_y,
             play_button_width, 
             play_button_height,
             "PLAY", 
-            ORANGE,  # Changed to orange
+            ORANGE,
             (255, 200, 100)
+        )
+        
+        # Leaderboard button
+        leaderboard_button_width = 200
+        leaderboard_button_height = 40
+        leaderboard_y = HEIGHT // 2 + 50
+        self.leaderboard_button = Button(
+            center_x - leaderboard_button_width // 2,
+            leaderboard_y,
+            leaderboard_button_width,
+            leaderboard_button_height,
+            "LEADERBOARD",
+            (100, 200, 255),
+            (150, 220, 255)
         )
         
         # Difficulty buttons (smaller and horizontal)
         diff_button_width = 120
         diff_button_height = 40
-        diff_y = HEIGHT // 2 + play_button_height + 30
-        
-        # Colors for difficulty buttons
-        diff_colors = {
-            "Easy": (100, 200, 100),  # Light green
-            "Medium": (100, 100, 200),  # Light blue
-            "Hard": (200, 100, 100)    # Light red
-        }
-        
-        # Selected difficulty has a more vibrant color
-        selected_colors = {
-            "Easy": GREEN,
-            "Medium": BLUE,
-            "Hard": RED
-        }
+        diff_y = HEIGHT // 2 + 120
         
         self.difficulty_buttons = []
         difficulties = ["Easy", "Medium", "Hard"]
@@ -195,8 +254,8 @@ class Game:
                 diff_button_width,
                 diff_button_height,
                 diff,
-                selected_colors[diff] if is_selected else diff_colors[diff],
-                selected_colors[diff]  # Hover color is always the vibrant version
+                PURPLE if is_selected else GREY,  # Selected is purple, non-selected is grey
+                PURPLE  # Hover color is always purple
             )
             self.difficulty_buttons.append(diff_button)
         
@@ -237,9 +296,10 @@ class Game:
                 self.targets.append(Target(x, y, self.target_size))
             
     def update(self):
-        if self.state == "home":
+        if self.state == "home" or self.state == "leaderboard":
             mouse_pos = pygame.mouse.get_pos()
             self.play_button.update(mouse_pos)
+            self.leaderboard_button.update(mouse_pos)
             for button in self.difficulty_buttons:
                 button.update(mouse_pos)
                 
@@ -250,6 +310,8 @@ class Game:
             # Game over condition
             if remaining_time <= 0:
                 self.state = "game_over"
+                # Add score to leaderboard
+                self.leaderboard.add_score(self.difficulty, self.score)
                 
             # Spawn new targets
             if current_time - self.last_spawn_time > self.spawn_rate:
@@ -270,7 +332,7 @@ class Game:
                 
             if event.type == pygame.KEYDOWN:
                 if event.key == pygame.K_ESCAPE:
-                    if self.state == "game" or self.state == "game_over":
+                    if self.state == "game" or self.state == "game_over" or self.state == "leaderboard":
                         self.state = "home"
                         self.setup_home_screen()
                     else:
@@ -282,6 +344,9 @@ class Game:
                     if self.play_button.is_clicked(event.pos):
                         self.state = "game"
                         self.reset_game()
+                    
+                    if self.leaderboard_button.is_clicked(event.pos):
+                        self.state = "leaderboard"
                     
                     for i, button in enumerate(self.difficulty_buttons):
                         if button.is_clicked(event.pos):
@@ -301,7 +366,7 @@ class Game:
                     if not hit:  # Penalty for missing
                         self.score = max(0, self.score - 1)
                 
-                elif self.state == "game_over":
+                elif self.state == "game_over" or self.state == "leaderboard":
                     self.state = "home"
                     self.setup_home_screen()
     
@@ -320,8 +385,61 @@ class Game:
         
         # Draw buttons
         self.play_button.draw(self.screen)
+        self.leaderboard_button.draw(self.screen)
         for button in self.difficulty_buttons:
             button.draw(self.screen)
+            
+    def draw_leaderboard(self):
+        self.screen.fill(WHITE)
+        
+        # Draw title
+        title_text = self.title_font.render("Leaderboard", True, BLACK)
+        title_rect = title_text.get_rect(center=(WIDTH//2, 60))
+        self.screen.blit(title_text, title_rect)
+        
+        # Draw subtitle
+        subtitle_text = self.font.render(f"Difficulty: {self.difficulty}", True, PURPLE)
+        subtitle_rect = subtitle_text.get_rect(center=(WIDTH//2, 110))
+        self.screen.blit(subtitle_text, subtitle_rect)
+        
+        # Draw top scores
+        top_scores = self.leaderboard.get_top_scores(self.difficulty)
+        
+        if not top_scores:
+            no_scores_text = self.font.render("No scores yet!", True, BLACK)
+            no_scores_rect = no_scores_text.get_rect(center=(WIDTH//2, HEIGHT//2))
+            self.screen.blit(no_scores_text, no_scores_rect)
+        else:
+            # Draw header
+            header_y = 160
+            pygame.draw.line(self.screen, BLACK, (WIDTH//4, header_y), (WIDTH*3//4, header_y), 2)
+            
+            rank_text = self.font.render("Rank", True, BLACK)
+            self.screen.blit(rank_text, (WIDTH//4, header_y + 10))
+            
+            score_text = self.font.render("Score", True, BLACK)
+            score_rect = score_text.get_rect(midright=(WIDTH*3//4, header_y + 30))
+            self.screen.blit(score_text, score_rect)
+            
+            pygame.draw.line(self.screen, BLACK, (WIDTH//4, header_y + 50), (WIDTH*3//4, header_y + 50), 2)
+            
+            # Draw scores
+            for i, score in enumerate(top_scores):
+                y_pos = header_y + 70 + i * 50
+                
+                # Rank
+                rank_text = self.font.render(f"{i+1}.", True, BLACK)
+                self.screen.blit(rank_text, (WIDTH//4, y_pos))
+                
+                # Score
+                score_text = self.font.render(f"{score}", True, BLACK)
+                score_rect = score_text.get_rect(midright=(WIDTH*3//4, y_pos + 20))
+                self.screen.blit(score_text, score_rect)
+        
+        # Back button instruction
+        back_text = self.small_font.render("Press ESC or click anywhere to return to menu", True, BLACK)
+        back_rect = back_text.get_rect(center=(WIDTH//2, HEIGHT - 40))
+        self.screen.blit(back_text, back_rect)
             
     def draw_game(self):
         self.screen.fill(WHITE)
@@ -364,14 +482,22 @@ class Game:
         restart_text = self.font.render("Click anywhere to return to menu", True, WHITE)
         final_score_text = self.font.render(f"Final Score: {self.score}", True, YELLOW)
         
-        text_rect = game_over_text.get_rect(center=(WIDTH//2, HEIGHT//2 - 50))
+        # Get rank info
+        rank = self.leaderboard.get_rank(self.difficulty, self.score)
+        rank_text = self.font.render(f"Rank: #{rank} in {self.difficulty} mode", True, CYAN)
+        
+        # Position all text
+        text_rect = game_over_text.get_rect(center=(WIDTH//2, HEIGHT//2 - 80))
         self.screen.blit(game_over_text, text_rect)
         
-        text_rect = restart_text.get_rect(center=(WIDTH//2, HEIGHT//2 + 50))
-        self.screen.blit(restart_text, text_rect)
-        
-        text_rect = final_score_text.get_rect(center=(WIDTH//2, HEIGHT//2))
+        text_rect = final_score_text.get_rect(center=(WIDTH//2, HEIGHT//2 - 20))
         self.screen.blit(final_score_text, text_rect)
+        
+        text_rect = rank_text.get_rect(center=(WIDTH//2, HEIGHT//2 + 20))
+        self.screen.blit(rank_text, text_rect)
+        
+        text_rect = restart_text.get_rect(center=(WIDTH//2, HEIGHT//2 + 80))
+        self.screen.blit(restart_text, text_rect)
     
     def draw(self):
         if self.state == "home":
@@ -381,6 +507,8 @@ class Game:
         elif self.state == "game_over":
             self.draw_game()  # Draw the game state in background
             self.draw_game_over()  # Overlay game over screen
+        elif self.state == "leaderboard":
+            self.draw_leaderboard()
         
         pygame.display.flip()
     
